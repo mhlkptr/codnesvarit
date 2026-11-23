@@ -1,298 +1,224 @@
-from datetime import datetime, timezone
-from functools import lru_cache
-import re
-from typing import Any
+from pathlib import Path
 from urllib.parse import quote_plus, urljoin
+import re
 
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 import httpx
 
+BASE_DIR = Path(__file__).resolve().parent
+INDEX_FILE = BASE_DIR / "index.html"
 BASE_URL = "https://varecha.pravda.sk"
-SEARCH_URL = f"{BASE_URL}/vyhladavanie/"
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "sk-SK,sk;q=0.9,en-US;q=0.8,en;q=0.7",
-}
-
-app = FastAPI(
-    title="Varecha.sk Backend Proxy",
-    description="Serverovy backend na vyhladavanie a nacitavanie receptov zo stranky varecha.pravda.sk bez CORS obmedzeni.",
-    version="1.0.0",
-)
+app = FastAPI(title="Čo dnes variť?")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET"],
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
+CATEGORY_KEYWORDS = {
+    "all": ["obed", "recept"],
+    "meat": ["maso", "kuracie", "bravcove", "hovadzie", "morcacie", "ryba"],
+    "pasta": ["cestoviny", "spagety", "penne", "gnocchi", "lasagne", "rezance"],
+    "meatless": ["bezmasite", "syr", "sosovica", "fazula", "huby", "vajcia"],
+    "veggies": ["zelenina", "zemiaky", "cuketa", "brokolica", "tekvica", "kapusta"],
+}
 
-def _clean_text(value: str | None) -> str:
-    if not value:
-        return ""
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def _parse_minutes(text: str) -> int | None:
-    if not text:
-        return None
-    lower = text.lower()
-    hours_match = re.search(r"(\d+)\s*(?:h|hod|hodin|hodiny|hodina)", lower)
-    mins_match = re.search(r"(\d+)\s*(?:min|minut|minuty|minuta|m)", lower)
-    total = 0
-    if hours_match:
-        total += int(hours_match.group(1)) * 60
-    if mins_match:
-        total += int(mins_match.group(1))
-    return total if total > 0 else None
+DIFFICULTY_LABELS = {
+    "all": "Všetky",
+    "quick": "Rýchle",
+    "classic": "Klasické",
+    "weekend": "Víkendové",
+}
 
 
-def _map_difficulty(minutes: int | None) -> str:
-    if minutes is None:
-        return "classic"
-    if minutes <= 25:
-        return "quick"
-    if minutes <= 65:
-        return "classic"
-    return "weekend"
-
-
-def _extract_image_url(container: BeautifulSoup) -> str | None:
-    img = container.find("img")
-    if not img:
-        return None
-    for attr in ("data-src", "data-lazy-src", "srcset", "src"):
-        val = img.get(attr)
-        if not val:
-            continue
-        if attr == "srcset":
-            first_part = val.split(",")[0].strip().split(" ")[0]
-            if first_part:
-                return urljoin(BASE_URL, first_part)
-        else:
-            if not val.startswith("data:image"):
-                return urljoin(BASE_URL, val)
-    return None
-
-
-def _build_search_query(
-    category: str,
-    subcategory: str,
-    difficulty: str,
-    days: int,
-    custom_query: str | None,
-) -> str:
-    if custom_query and custom_query.strip():
-        return custom_query.strip()
-
-    parts: list[str] = []
+def build_search_query(category: str, subcategory: str) -> str:
     if subcategory and subcategory != "all":
-        parts.append(subcategory.strip())
-    elif category and category != "all":
-        cat_map = {
-            "meat": "maso",
-            "pasta": "cestoviny",
-            "meatless": "bezmasite",
-            "veggies": "zelenina",
-        }
-        parts.append(cat_map.get(category, category))
-
-    if difficulty == "quick":
-        parts.append("rychly")
-    elif difficulty == "weekend":
-        parts.append("pecene")
-
-    if days >= 3 and not parts:
-        parts.append("gulas")
-
-    return " ".join(parts).strip() or "obed"
+        return subcategory.strip()
+    keywords = CATEGORY_KEYWORDS.get(category, CATEGORY_KEYWORDS["all"])
+    return keywords[0]
 
 
-def _parse_search_results(html: str, limit: int = 18) -> list[dict[str, Any]]:
-    soup = BeautifulSoup(html, "html.parser")
-    recipes: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
+def estimate_difficulty(text: str, requested_difficulty: str) -> tuple[str, int | None]:
+    minutes_match = re.search(r"(\d{1,3})\s*min", text.lower())
+    prep_minutes = int(minutes_match.group(1)) if minutes_match else None
 
-    candidate_links = soup.select("a[href*='/recepty/']")
-    for link in candidate_links:
-        href = link.get("href")
-        if not href:
-            continue
-        full_url = urljoin(BASE_URL, href)
-        if full_url.rstrip("/") == f"{BASE_URL}/recepty" or full_url in seen_urls:
-            continue
+    if requested_difficulty != "all":
+        return requested_difficulty, prep_minutes
 
-        title = _clean_text(link.get("title") or link.get_text(" "))
-        card = link.find_parent(["article", "li", "div"]) or link
-        if not title or len(title) < 3:
-            heading = card.find(["h2", "h3", "h4"])
-            if heading:
-                title = _clean_text(heading.get_text(" "))
+    if prep_minutes is not None:
+        if prep_minutes <= 30:
+            return "quick", prep_minutes
+        if prep_minutes <= 60:
+            return "classic", prep_minutes
+        return "weekend", prep_minutes
 
-        if not title or len(title) < 3:
-            continue
-
-        seen_urls.add(full_url)
-        card_text = _clean_text(card.get_text(" "))
-        minutes = _parse_minutes(card_text)
-        image_url = _extract_image_url(card)
-
-        recipes.append(
-            {
-                "id": full_url,
-                "title": title,
-                "url": full_url,
-                "image": image_url,
-                "prep_minutes": minutes,
-                "difficulty": _map_difficulty(minutes),
-                "snippet": card_text[:220] if card_text else "",
-                "source": "varecha.pravda.sk",
-            }
-        )
-
-        if len(recipes) >= limit:
-            break
-
-    return recipes
+    return "classic", prep_minutes
 
 
-async def _fetch_search_html(query: str) -> tuple[str, str]:
-    params = {"q": query}
-    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=15.0) as client:
-        response = await client.get(SEARCH_URL, params=params)
-        response.raise_for_status()
-        return response.text, str(response.url)
-
-
-@lru_cache(maxsize=64)
-def _cached_parse_note() -> str:
-    return "cache_ready"
-
-
-@app.get("/api/health")
-async def health() -> dict[str, str]:
-    _cached_parse_note()
-    return {
-        "status": "ok",
-        "source": "varecha.pravda.sk",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+@app.get("/")
+def serve_index():
+    if INDEX_FILE.exists():
+        return FileResponse(INDEX_FILE, media_type="text/html; charset=utf-8")
+    return JSONResponse(
+        status_code=404,
+        content={"ok": False, "detail": "Súbor index.html sa nenašiel."},
+    )
 
 
 @app.get("/api/recipes")
 async def get_recipes(
-    difficulty: str = Query(default="all", description="all | quick | classic | weekend"),
+    category: str = Query(default="all"),
+    subcategory: str = Query(default="all"),
+    difficulty: str = Query(default="all"),
     people: int = Query(default=2, ge=1, le=20),
     days: int = Query(default=1, ge=1, le=7),
-    category: str = Query(default="all", description="all | meat | pasta | meatless | veggies"),
-    subcategory: str = Query(default="all"),
-    q: str | None = Query(default=None),
-    limit: int = Query(default=15, ge=1, le=30),
-) -> dict[str, Any]:
-    search_query = _build_search_query(category, subcategory, difficulty, days, q)
-    direct_search_url = f"{SEARCH_URL}?q={quote_plus(search_query)}"
+):
+    query_text = build_search_query(category, subcategory)
+    search_url = f"{BASE_URL}/vyhladavanie/?q={quote_plus(query_text)}"
+    total_portions = people * days
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "sk-SK,sk;q=0.9,en;q=0.8",
+    }
 
     try:
-        html, resolved_url = await _fetch_search_html(search_query)
-        items = _parse_search_results(html, limit=limit)
-
-        if difficulty != "all":
-            filtered = [r for r in items if r["difficulty"] == difficulty]
-            if filtered:
-                items = filtered
-
-        return {
-            "ok": True,
-            "query": search_query,
-            "people": people,
-            "days": days,
-            "total_portions": people * days,
-            "search_url": resolved_url or direct_search_url,
-            "count": len(items),
-            "recipes": items,
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-        }
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
+            resp = await client.get(search_url)
+            resp.raise_for_status()
     except Exception as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "query": search_query,
-            "people": people,
-            "days": days,
-            "total_portions": people * days,
-            "search_url": direct_search_url,
-            "count": 0,
-            "recipes": [],
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-        }
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "query": query_text,
+                "search_url": search_url,
+                "total_portions": total_portions,
+                "count": 0,
+                "recipes": [],
+                "error": str(exc),
+            },
+        )
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    seen_urls: set[str] = set()
+    recipes: list[dict] = []
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+        if "/recepty/" not in href:
+            continue
+
+        full_url = urljoin(BASE_URL, href)
+        if full_url.rstrip("/") == f"{BASE_URL}/recepty" or full_url in seen_urls:
+            continue
+
+        title = " ".join(link.get_text(" ", strip=True).split())
+        if not title or len(title) < 3:
+            continue
+
+        seen_urls.add(full_url)
+
+        parent = link.find_parent(["article", "div", "li"]) or link
+        card_text = " ".join(parent.get_text(" ", strip=True).split())
+
+        img_tag = parent.find("img")
+        img_url = None
+        if img_tag:
+            raw_img = img_tag.get("data-src") or img_tag.get("src") or ""
+            if raw_img and not raw_img.startswith("data:"):
+                img_url = urljoin(BASE_URL, raw_img.strip())
+
+        est_diff, prep_min = estimate_difficulty(card_text, difficulty)
+        if difficulty != "all" and est_diff != difficulty and prep_min is not None:
+            continue
+
+        snippet = card_text.replace(title, "", 1).strip()
+        if len(snippet) > 160:
+            snippet = snippet[:157].rstrip() + "..."
+
+        recipes.append(
+            {
+                "title": title,
+                "url": full_url,
+                "image": img_url,
+                "prep_minutes": prep_min,
+                "difficulty": DIFFICULTY_LABELS.get(est_diff, est_diff),
+                "snippet": snippet,
+            }
+        )
+
+        if len(recipes) >= 18:
+            break
+
+    return {
+        "ok": True,
+        "query": query_text,
+        "search_url": search_url,
+        "total_portions": total_portions,
+        "count": len(recipes),
+        "recipes": recipes,
+    }
 
 
 @app.get("/api/recipe-detail")
-async def get_recipe_detail(url: str = Query(..., min_length=10)) -> dict[str, Any]:
-    if not url.startswith(BASE_URL):
-        return {"ok": False, "error": "Povolene su iba URL adresy z domeny varecha.pravda.sk."}
+async def get_recipe_detail(url: str = Query(...)):
+    if not url.startswith("https://varecha.pravda.sk/"):
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "detail": "Neplatná adresa receptu."},
+        )
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "sk-SK,sk;q=0.9,en;q=0.8",
+    }
 
     try:
-        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=15.0) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        title_el = soup.find("h1")
-        title = _clean_text(title_el.get_text(" ")) if title_el else "Recept"
-
-        ingredients: list[str] = []
-        for sel in (
-            "[itemprop='recipeIngredient']",
-            ".ingredients li",
-            ".suroviny li",
-            ".recipe-ingredients li",
-        ):
-            found = soup.select(sel)
-            if found:
-                for el in found:
-                    txt = _clean_text(el.get_text(" "))
-                    if txt and txt not in ingredients:
-                        ingredients.append(txt)
-                break
-
-        steps: list[str] = []
-        for sel in (
-            "[itemprop='recipeInstructions'] li",
-            "[itemprop='recipeInstructions'] p",
-            ".postup li",
-            ".steps li",
-            ".recipe-steps li",
-        ):
-            found = soup.select(sel)
-            if found:
-                for el in found:
-                    txt = _clean_text(el.get_text(" "))
-                    if txt and len(txt) > 5 and txt not in steps:
-                        steps.append(txt)
-                break
-
-        return {
-            "ok": True,
-            "url": url,
-            "title": title,
-            "ingredients": ingredients[:40],
-            "steps": steps[:25],
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-        }
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
     except Exception as exc:
-        return {
-            "ok": False,
-            "url": url,
-            "error": str(exc),
-        }
+        return JSONResponse(
+            status_code=502,
+            content={"ok": False, "url": url, "error": str(exc)},
+        )
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    h1 = soup.find("h1")
+    title = " ".join(h1.get_text(" ", strip=True).split()) if h1 else "Recept"
+
+    ingredients: list[str] = []
+    for item in soup.select("[itemprop='recipeIngredient'], .ingrediencie li, .ingredients li"):
+        txt = " ".join(item.get_text(" ", strip=True).split())
+        if txt and txt not in ingredients:
+            ingredients.append(txt)
+
+    steps: list[str] = []
+    for item in soup.select("[itemprop='recipeInstructions'] p, [itemprop='recipeInstructions'] li, .postup p, .postup li"):
+        txt = " ".join(item.get_text(" ", strip=True).split())
+        if txt and len(txt) > 5 and txt not in steps:
+            steps.append(txt)
+
+    return {
+        "ok": True,
+        "title": title,
+        "url": url,
+        "ingredients": ingredients,
+        "steps": steps,
+    }
