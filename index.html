@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Čo dnes variť? – Varecha.sk</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px;
+      background: #faf7f2;
+      color: #222;
+    }
+    .filters {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+      background: #fff;
+      padding: 16px;
+      border-radius: 10px;
+      border: 1px solid #e5dfd5;
+      margin-bottom: 18px;
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      font-size: 14px;
+      gap: 6px;
+    }
+    select, input, button {
+      padding: 8px 10px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+    button {
+      background: #c84b28;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover {
+      background: #a93b1d;
+    }
+    .status {
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: #fff;
+      border: 1px solid #e5dfd5;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #e5dfd5;
+      border-radius: 10px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .card img {
+      width: 100%;
+      height: 150px;
+      object-fit: cover;
+      border-radius: 6px;
+      background: #eee;
+    }
+    .card h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+    .meta {
+      font-size: 13px;
+      color: #555;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .secondary-btn {
+      background: #444;
+      color: #fff;
+      text-decoration: none;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .detail-box {
+      margin-top: 24px;
+      background: #fff;
+      border: 1px solid #e5dfd5;
+      border-radius: 10px;
+      padding: 18px;
+      display: none;
+    }
+    #customSubcategory {
+      display: none;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Čo dnes variť?</h1>
+
+  <div class="filters">
+    <label>
+      Kategória
+      <select id="category">
+        <option value="all">Všetky</option>
+        <option value="meat">Mäso</option>
+        <option value="pasta">Cestoviny</option>
+        <option value="meatless">Bezmäsité</option>
+        <option value="veggies">Zelenina</option>
+      </select>
+    </label>
+
+    <label>
+      Podkategória / surovina
+      <select id="subcategorySelect"></select>
+      <input id="customSubcategory" type="text" placeholder="Zadajte vlastnú surovinu" />
+    </label>
+
+    <label>
+      Náročnosť
+      <select id="difficulty">
+        <option value="all">Všetky</option>
+        <option value="quick">Rýchle</option>
+        <option value="classic">Klasické</option>
+        <option value="weekend">Víkendové</option>
+      </select>
+    </label>
+
+    <label>
+      Počet ľudí
+      <input id="people" type="number" min="1" max="20" value="2" />
+    </label>
+
+    <label>
+      Počet dní
+      <input id="days" type="number" min="1" max="7" value="1" />
+    </label>
+
+    <label>
+      &nbsp;
+      <button id="searchBtn" type="button">Načítať recepty</button>
+    </label>
+  </div>
+
+  <div id="status" class="status">Pripravené. Kliknite na „Načítať recepty“.</div>
+  <div id="results" class="grid"></div>
+
+  <div id="detailBox" class="detail-box">
+    <h2 id="detailTitle"></h2>
+    <div id="detailContent"></div>
+  </div>
+
+  <script>
+    const BACKEND_URL = window.location.origin.startsWith("http")
+      ? window.location.origin
+      : "http://localhost:8000";
+
+    const SUBCATEGORIES_BY_CATEGORY = {
+      all: [
+        { value: "kuracie", label: "Kuracie mäso" },
+        { value: "cestoviny", label: "Cestoviny" },
+        { value: "zemiaky", label: "Zemiaky" },
+        { value: "ryza", label: "Ryža" },
+        { value: "syr", label: "Syr" }
+      ],
+      meat: [
+        { value: "kuracie", label: "Kuracie mäso" },
+        { value: "bravcove", label: "Bravčové mäso" },
+        { value: "hovadzie", label: "Hovädzie mäso" },
+        { value: "morcacie", label: "Morčacie mäso" },
+        { value: "ryba", label: "Ryby" }
+      ],
+      pasta: [
+        { value: "spagety", label: "Špagety" },
+        { value: "penne", label: "Penne" },
+        { value: "gnocchi", label: "Gnocchi" },
+        { value: "lasagne", label: "Lasagne" },
+        { value: "rezance", label: "Rezance" }
+      ],
+      meatless: [
+        { value: "syr", label: "Syr" },
+        { value: "sosovica", label: "Šošovica" },
+        { value: "fazula", label: "Fazuľa" },
+        { value: "huby", label: "Huby" },
+        { value: "vajcia", label: "Vajcia" }
+      ],
+      veggies: [
+        { value: "zemiaky", label: "Zemiaky" },
+        { value: "cuketa", label: "Cuketa" },
+        { value: "brokolica", label: "Brokolica" },
+        { value: "tekvica", label: "Tekvica" },
+        { value: "kapusta", label: "Kapusta" }
+      ]
+    };
+
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+    const detailBoxEl = document.getElementById("detailBox");
+    const detailTitleEl = document.getElementById("detailTitle");
+    const detailContentEl = document.getElementById("detailContent");
+    const categoryEl = document.getElementById("category");
+    const subcategorySelectEl = document.getElementById("subcategorySelect");
+    const customSubcategoryEl = document.getElementById("customSubcategory");
+
+    function populateSubcategories(categoryValue) {
+      const items = SUBCATEGORIES_BY_CATEGORY[categoryValue] || SUBCATEGORIES_BY_CATEGORY.all;
+      subcategorySelectEl.innerHTML = "";
+
+      const allOption = document.createElement("option");
+      allOption.value = "all";
+      allOption.textContent = "Všetky suroviny";
+      subcategorySelectEl.appendChild(allOption);
+
+      for (const item of items) {
+        const opt = document.createElement("option");
+        opt.value = item.value;
+        opt.textContent = item.label;
+        subcategorySelectEl.appendChild(opt);
+      }
+
+      const customOption = document.createElement("option");
+      customOption.value = "custom";
+      customOption.textContent = "Vlastná surovina...";
+      subcategorySelectEl.appendChild(customOption);
+
+      customSubcategoryEl.style.display = "none";
+      customSubcategoryEl.value = "";
+    }
+
+    categoryEl.addEventListener("change", () => {
+      populateSubcategories(categoryEl.value);
+    });
+
+    subcategorySelectEl.addEventListener("change", () => {
+      if (subcategorySelectEl.value === "custom") {
+        customSubcategoryEl.style.display = "block";
+        customSubcategoryEl.focus();
+      } else {
+        customSubcategoryEl.style.display = "none";
+      }
+    });
+
+    function getSelectedSubcategory() {
+      if (subcategorySelectEl.value === "custom") {
+        return customSubcategoryEl.value.trim() || "all";
+      }
+      return subcategorySelectEl.value;
+    }
+
+    function buildDirectSearchUrl(query) {
+      return `https://varecha.pravda.sk/vyhladavanie/?q=${encodeURIComponent(query || "obed")}`;
+    }
+
+    async function loadRecipes() {
+      const category = categoryEl.value;
+      const subcategory = getSelectedSubcategory();
+      const difficulty = document.getElementById("difficulty").value;
+      const people = Math.max(1, parseInt(document.getElementById("people").value, 10) || 2);
+      const days = Math.max(1, parseInt(document.getElementById("days").value, 10) || 1);
+
+      const params = new URLSearchParams({
+        category,
+        subcategory,
+        difficulty,
+        people: String(people),
+        days: String(days),
+      });
+
+      statusEl.textContent = "Načítavam recepty zo servera...";
+      resultsEl.innerHTML = "";
+      detailBoxEl.style.display = "none";
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/recipes?${params.toString()}`);
+        const data = await res.json();
+
+        const fallbackUrl = data.search_url || buildDirectSearchUrl(data.query || subcategory);
+
+        if (!res.ok || !data.ok || !Array.isArray(data.recipes) || data.recipes.length === 0) {
+          statusEl.innerHTML = `Nepodarilo sa načítať recepty cez backend. <a href="${fallbackUrl}" target="_blank" rel="noopener">Otvoriť vyhľadávanie na varecha.pravda.sk</a>`;
+          return;
+        }
+
+        statusEl.innerHTML = `Nájdené recepty (${data.count}) pre ${data.total_portions} porcií | <a href="${fallbackUrl}" target="_blank" rel="noopener">Otvoriť na varecha.pravda.sk</a>`;
+
+        resultsEl.innerHTML = data.recipes.map((recipe) => `
+          <div class="card">
+            <div>
+              ${recipe.image ? `<img src="${recipe.image}" alt="${recipe.title}" />` : ""}
+              <h3>${recipe.title}</h3>
+              <p class="meta">
+                ${recipe.prep_minutes ? `Čas: cca ${recipe.prep_minutes} min | ` : ""}
+                Náročnosť: ${recipe.difficulty || "classic"}
+              </p>
+              ${recipe.snippet ? `<p class="meta">${recipe.snippet}</p>` : ""}
+            </div>
+            <div class="actions">
+              <button type="button" onclick="loadDetail('${encodeURIComponent(recipe.url)}')">Detail receptu</button>
+              <a class="secondary-btn" href="${recipe.url}" target="_blank" rel="noopener">Varecha.sk</a>
+            </div>
+          </div>
+        `).join("");
+      } catch (err) {
+        const fallbackUrl = buildDirectSearchUrl(subcategory !== "all" ? subcategory : category);
+        statusEl.innerHTML = `Backend na ${BACKEND_URL} nie je dostupný. <a href="${fallbackUrl}" target="_blank" rel="noopener">Otvoriť vyhľadávanie na varecha.pravda.sk</a>`;
+      }
+    }
+
+    async function loadDetail(encodedUrl) {
+      const url = decodeURIComponent(encodedUrl);
+      detailBoxEl.style.display = "block";
+      detailTitleEl.textContent = "Načítavam detail receptu...";
+      detailContentEl.innerHTML = "";
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/recipe-detail?url=${encodeURIComponent(url)}`);
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          detailTitleEl.textContent = "Detail sa nepodarilo načítať";
+          detailContentEl.innerHTML = `<p><a href="${url}" target="_blank" rel="noopener">Otvoriť recept priamo na varecha.pravda.sk</a></p>`;
+          return;
+        }
+
+        detailTitleEl.textContent = data.title || "Recept";
+        const ingList = (data.ingredients || []).map((i) => `<li>${i}</li>`).join("");
+        const stepList = (data.steps || []).map((s) => `<li>${s}</li>`).join("");
+
+        detailContentEl.innerHTML = `
+          <p><a href="${data.url}" target="_blank" rel="noopener">Pôvodný recept na varecha.pravda.sk</a></p>
+          <h3>Suroviny</h3>
+          <ul>${ingList || "<li>Suroviny sa nenačítali, otvorte recept na webe.</li>"}</ul>
+          <h3>Postup</h3>
+          <ol>${stepList || "<li>Postup sa nenačítal, otvorte recept na webe.</li>"}</ol>
+        `;
+      } catch (err) {
+        detailTitleEl.textContent = "Chyba pri načítaní detailu";
+        detailContentEl.innerHTML = `<p><a href="${url}" target="_blank" rel="noopener">Otvoriť recept priamo na varecha.pravda.sk</a></p>`;
+      }
+    }
+
+    populateSubcategories(categoryEl.value);
+    document.getElementById("searchBtn").addEventListener("click", loadRecipes);
+  </script>
+</body>
+</html>
