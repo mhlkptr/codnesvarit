@@ -96,7 +96,8 @@
       font-size: 13px;
     }
     .detail-box {
-      margin-top: 24px;
+      grid-column: 1 / -1;
+      margin: 8px 0;
       background: #fff;
       border: 1px solid #e5dfd5;
       border-radius: 10px;
@@ -121,6 +122,7 @@
         <option value="pasta">Cestoviny</option>
         <option value="meatless">Bezmäsité</option>
         <option value="veggies">Zelenina</option>
+        <option value="sweet">Sladké</option>
       </select>
     </label>
 
@@ -204,26 +206,36 @@
         { value: "brokolica", label: "Brokolica" },
         { value: "tekvica", label: "Tekvica" },
         { value: "kapusta", label: "Kapusta" }
+      ],
+      sweet: [
+        { value: "palacinky", label: "Palacinky" },
+        { value: "kysnute cesto", label: "Kysnuté cesto" },
+        { value: "kolace", label: "Koláče" }
       ]
     };
 
+    const categoryEl = document.getElementById("category");
+    const subcategorySelectEl = document.getElementById("subcategorySelect");
+    const customSubcategoryEl = document.getElementById("customSubcategory");
+    const difficultyEl = document.getElementById("difficulty");
+    const peopleEl = document.getElementById("people");
+    const daysEl = document.getElementById("days");
+    const searchBtnEl = document.getElementById("searchBtn");
     const statusEl = document.getElementById("status");
     const resultsEl = document.getElementById("results");
     const detailBoxEl = document.getElementById("detailBox");
     const detailTitleEl = document.getElementById("detailTitle");
     const detailContentEl = document.getElementById("detailContent");
-    const categoryEl = document.getElementById("category");
-    const subcategorySelectEl = document.getElementById("subcategorySelect");
-    const customSubcategoryEl = document.getElementById("customSubcategory");
 
-    function populateSubcategories(categoryValue) {
-      const items = SUBCATEGORIES_BY_CATEGORY[categoryValue] || SUBCATEGORIES_BY_CATEGORY.all;
+    function populateSubcategories() {
+      const cat = categoryEl.value;
+      const items = SUBCATEGORIES_BY_CATEGORY[cat] || SUBCATEGORIES_BY_CATEGORY.all;
       subcategorySelectEl.innerHTML = "";
 
-      const allOption = document.createElement("option");
-      allOption.value = "all";
-      allOption.textContent = "Všetky suroviny";
-      subcategorySelectEl.appendChild(allOption);
+      const allOpt = document.createElement("option");
+      allOpt.value = "all";
+      allOpt.textContent = "Všetky v kategórii";
+      subcategorySelectEl.appendChild(allOpt);
 
       for (const item of items) {
         const opt = document.createElement("option");
@@ -232,27 +244,18 @@
         subcategorySelectEl.appendChild(opt);
       }
 
-      const customOption = document.createElement("option");
-      customOption.value = "custom";
-      customOption.textContent = "Vlastná surovina...";
-      subcategorySelectEl.appendChild(customOption);
+      const customOpt = document.createElement("option");
+      customOpt.value = "custom";
+      customOpt.textContent = "Vlastná surovina...";
+      subcategorySelectEl.appendChild(customOpt);
 
-      customSubcategoryEl.style.display = "none";
-      customSubcategoryEl.value = "";
+      toggleCustomSubcategory();
     }
 
-    categoryEl.addEventListener("change", () => {
-      populateSubcategories(categoryEl.value);
-    });
-
-    subcategorySelectEl.addEventListener("change", () => {
-      if (subcategorySelectEl.value === "custom") {
-        customSubcategoryEl.style.display = "block";
-        customSubcategoryEl.focus();
-      } else {
-        customSubcategoryEl.style.display = "none";
-      }
-    });
+    function toggleCustomSubcategory() {
+      const isCustom = subcategorySelectEl.value === "custom";
+      customSubcategoryEl.style.display = isCustom ? "block" : "none";
+    }
 
     function getSelectedSubcategory() {
       if (subcategorySelectEl.value === "custom") {
@@ -261,100 +264,115 @@
       return subcategorySelectEl.value;
     }
 
-    function buildDirectSearchUrl(query) {
-      return `https://varecha.pravda.sk/vyhladavanie/?q=${encodeURIComponent(query || "obed")}`;
+    function hideDetailBox() {
+      detailBoxEl.style.display = "none";
+      document.body.appendChild(detailBoxEl);
     }
 
-    async function loadRecipes() {
-      const category = categoryEl.value;
-      const subcategory = getSelectedSubcategory();
-      const difficulty = document.getElementById("difficulty").value;
-      const people = Math.max(1, parseInt(document.getElementById("people").value, 10) || 2);
-      const days = Math.max(1, parseInt(document.getElementById("days").value, 10) || 1);
+    async function loadRecipeDetail(recipe, cardEl) {
+      if (detailBoxEl.style.display === "block" && detailBoxEl.dataset.activeUrl === recipe.url) {
+        hideDetailBox();
+        return;
+      }
 
+      cardEl.insertAdjacentElement("afterend", detailBoxEl);
+      detailBoxEl.dataset.activeUrl = recipe.url;
+      detailBoxEl.style.display = "block";
+      detailTitleEl.textContent = recipe.title;
+      detailContentEl.textContent = "Načítavam detail receptu...";
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/recipe-detail?url=${encodeURIComponent(recipe.url)}`);
+        const data = await res.json();
+
+        if (!res.ok || !data.ok) {
+          detailContentEl.textContent = data.detail || data.error || "Detail sa nepodarilo načítať.";
+          return;
+        }
+
+        const ingList = (data.ingredients || []).map((i) => `<li>${i}</li>`).join("");
+        const stepList = (data.steps || []).map((s) => `<li>${s}</li>`).join("");
+
+        detailContentEl.innerHTML = `
+          ${ingList ? `<h3>Suroviny</h3><ul>${ingList}</ul>` : "<p>Suroviny sa nenašli.</p>"}
+          ${stepList ? `<h3>Postup</h3><ol>${stepList}</ol>` : "<p>Postup sa nenašiel.</p>"}
+          <p><a class="secondary-btn" href="${recipe.url}" target="_blank" rel="noopener noreferrer">Otvoriť na Varecha.sk</a></p>
+        `;
+      } catch (err) {
+        detailContentEl.textContent = `Chyba pri načítaní detailu: ${err.message}`;
+      }
+    }
+
+    function renderRecipes(recipes) {
+      hideDetailBox();
+      resultsEl.innerHTML = "";
+
+      if (!recipes.length) {
+        resultsEl.innerHTML = "<p>Nenašli sa žiadne recepty.</p>";
+        return;
+      }
+
+      for (const recipe of recipes) {
+        const card = document.createElement("article");
+        card.className = "card";
+
+        const timeText = recipe.prep_minutes ? `${recipe.prep_minutes} min` : "čas neuvedený";
+        const imgHtml = recipe.image ? `<img src="${recipe.image}" alt="${recipe.title}" />` : "";
+
+        card.innerHTML = `
+          <div>
+            ${imgHtml}
+            <h3>${recipe.title}</h3>
+            <div class="meta">${recipe.difficulty} • ${timeText}</div>
+            ${recipe.snippet ? `<p>${recipe.snippet}</p>` : ""}
+          </div>
+          <div class="actions">
+            <button type="button" class="detail-btn">Detail receptu</button>
+            <a class="secondary-btn" href="${recipe.url}" target="_blank" rel="noopener noreferrer">Varecha.sk</a>
+          </div>
+        `;
+
+        card.querySelector(".detail-btn").addEventListener("click", () => {
+          loadRecipeDetail(recipe, card);
+        });
+
+        resultsEl.appendChild(card);
+      }
+    }
+
+    async function searchRecipes() {
       const params = new URLSearchParams({
-        category,
-        subcategory,
-        difficulty,
-        people: String(people),
-        days: String(days),
+        category: categoryEl.value,
+        subcategory: getSelectedSubcategory(),
+        difficulty: difficultyEl.value,
+        people: peopleEl.value || "2",
+        days: daysEl.value || "1"
       });
 
-      statusEl.textContent = "Načítavam recepty zo servera...";
-      resultsEl.innerHTML = "";
-      detailBoxEl.style.display = "none";
+      statusEl.textContent = "Vyhľadávam recepty...";
 
       try {
         const res = await fetch(`${BACKEND_URL}/api/recipes?${params.toString()}`);
         const data = await res.json();
 
-        const fallbackUrl = data.search_url || buildDirectSearchUrl(data.query || subcategory);
-
-        if (!res.ok || !data.ok || !Array.isArray(data.recipes) || data.recipes.length === 0) {
-          statusEl.innerHTML = `Nepodarilo sa načítať recepty cez backend. <a href="${fallbackUrl}" target="_blank" rel="noopener">Otvoriť vyhľadávanie na varecha.pravda.sk</a>`;
-          return;
-        }
-
-        statusEl.innerHTML = `Nájdené recepty (${data.count}) pre ${data.total_portions} porcií | <a href="${fallbackUrl}" target="_blank" rel="noopener">Otvoriť na varecha.pravda.sk</a>`;
-
-        resultsEl.innerHTML = data.recipes.map((recipe) => `
-          <div class="card">
-            <div>
-              ${recipe.image ? `<img src="${recipe.image}" alt="${recipe.title}" />` : ""}
-              <h3>${recipe.title}</h3>
-              <p class="meta">
-                ${recipe.prep_minutes ? `Čas: cca ${recipe.prep_minutes} min | ` : ""}
-                Náročnosť: ${recipe.difficulty || "classic"}
-              </p>
-              ${recipe.snippet ? `<p class="meta">${recipe.snippet}</p>` : ""}
-            </div>
-            <div class="actions">
-              <button type="button" onclick="loadDetail('${encodeURIComponent(recipe.url)}')">Detail receptu</button>
-              <a class="secondary-btn" href="${recipe.url}" target="_blank" rel="noopener">Varecha.sk</a>
-            </div>
-          </div>
-        `).join("");
-      } catch (err) {
-        const fallbackUrl = buildDirectSearchUrl(subcategory !== "all" ? subcategory : category);
-        statusEl.innerHTML = `Backend na ${BACKEND_URL} nie je dostupný. <a href="${fallbackUrl}" target="_blank" rel="noopener">Otvoriť vyhľadávanie na varecha.pravda.sk</a>`;
-      }
-    }
-
-    async function loadDetail(encodedUrl) {
-      const url = decodeURIComponent(encodedUrl);
-      detailBoxEl.style.display = "block";
-      detailTitleEl.textContent = "Načítavam detail receptu...";
-      detailContentEl.innerHTML = "";
-
-      try {
-        const res = await fetch(`${BACKEND_URL}/api/recipe-detail?url=${encodeURIComponent(url)}`);
-        const data = await res.json();
-
         if (!res.ok || !data.ok) {
-          detailTitleEl.textContent = "Detail sa nepodarilo načítať";
-          detailContentEl.innerHTML = `<p><a href="${url}" target="_blank" rel="noopener">Otvoriť recept priamo na varecha.pravda.sk</a></p>`;
+          statusEl.textContent = data.error || data.detail || "Chyba pri vyhľadávaní.";
+          renderRecipes([]);
           return;
         }
 
-        detailTitleEl.textContent = data.title || "Recept";
-        const ingList = (data.ingredients || []).map((i) => `<li>${i}</li>`).join("");
-        const stepList = (data.steps || []).map((s) => `<li>${s}</li>`).join("");
-
-        detailContentEl.innerHTML = `
-          <p><a href="${data.url}" target="_blank" rel="noopener">Pôvodný recept na varecha.pravda.sk</a></p>
-          <h3>Suroviny</h3>
-          <ul>${ingList || "<li>Suroviny sa nenačítali, otvorte recept na webe.</li>"}</ul>
-          <h3>Postup</h3>
-          <ol>${stepList || "<li>Postup sa nenačítal, otvorte recept na webe.</li>"}</ol>
-        `;
+        statusEl.textContent = `Nájdených receptov: ${data.count} (spolu porcií: ${data.total_portions}, dopyt: ${data.query})`;
+        renderRecipes(data.recipes || []);
       } catch (err) {
-        detailTitleEl.textContent = "Chyba pri načítaní detailu";
-        detailContentEl.innerHTML = `<p><a href="${url}" target="_blank" rel="noopener">Otvoriť recept priamo na varecha.pravda.sk</a></p>`;
+        statusEl.textContent = `Chyba komunikácie so serverom: ${err.message}`;
       }
     }
 
-    populateSubcategories(categoryEl.value);
-    document.getElementById("searchBtn").addEventListener("click", loadRecipes);
+    categoryEl.addEventListener("change", populateSubcategories);
+    subcategorySelectEl.addEventListener("change", toggleCustomSubcategory);
+    searchBtnEl.addEventListener("click", searchRecipes);
+
+    populateSubcategories();
   </script>
 </body>
 </html>
